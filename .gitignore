@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+
+# Local data and secrets
+*.xlsx
+*.xls
+.env
+.streamlit/secrets.toml
+
+# Streamlit
+.streamlit/cache/
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.vscode/

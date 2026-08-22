@@ -1,0 +1,264 @@
+# Revenue Forecasting Dashboard
+
+Interactive Streamlit dashboard for Prophet-based branch revenue forecasting with comprehensive data quality analysis and model diagnostics.
+
+## 📋 Overview
+
+This dashboard implements a complete time series forecasting workflow based on Facebook Prophet, designed for:
+- Multi-branch retail revenue forecasting
+- Working capital facility applications requiring credible projections with uncertainty intervals
+- Data quality assessment and cleaning of messy export data
+- Model validation and performance comparison
+
+**Key Features:**
+- Automated data cleaning pipeline handling overlapping reporting granularities
+- Interactive Prophet model training with baseline and tuned configurations
+- Comprehensive data quality reporting (critical: detects 100%+ double-counting issues)
+- 12-month revenue forecast with 90% prediction intervals
+- Three-scenario analysis (worst/expected/best case) for credit applications
+- Model diagnostics including changepoint detection and residual analysis
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+- Python 3.8 or higher
+- pip package manager
+
+### Installation
+
+1. **Clone or download this repository:**
+   ```bash
+   cd revenue_forecast_dashboard
+   ```
+
+2. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Run the dashboard:**
+   ```bash
+   streamlit run app.py
+   ```
+
+4. **Open in browser:**
+   The dashboard will automatically open at `http://localhost:8501`
+
+## 📊 Usage Guide
+
+### 1. Data Input
+
+The dashboard supports two data input methods:
+
+**Option A: Use Sample Dataset**
+- Click "Load Sample Dataset" in the sidebar
+- Uses the provided `Branch_Revenue_Forecasting_Raw_Dataset.xlsx` file
+
+**Option B: Upload Your Own Data**
+- Select "Upload Excel File" in the sidebar
+- Upload an Excel file with a "Raw_Data" sheet
+- Required columns: `Report_Month`, `Branch_Code`, `Monthly_Revenue_GHS`
+
+### 2. Data Quality Assessment
+
+Navigate to **📊 Data Quality** to:
+- View comprehensive cleaning statistics
+- See the impact of handling overlapping granularities
+- Compare naive (incorrect) vs. clean (correct) aggregation
+- Explore historical revenue trends
+- Review data summary statistics
+
+**Critical Finding:** The cleaning pipeline detects and corrects double-counting issues where weekly/daily records overlap with monthly summaries in the same export.
+
+### 3. Generate Forecasts
+
+Navigate to **🔮 Forecasting** to:
+
+**Configure Model:**
+- Choose between Baseline (Prophet defaults) or Tuned (optimized parameters)
+- Optionally customize parameters (changepoint prior, seasonality mode, forecast horizon)
+- Set train/test split date
+
+**Generate Forecast:**
+- Click "🚀 Train Model and Generate Forecast"
+- View three revenue scenarios: Worst Case (90% lower), Expected Case, Best Case (90% upper)
+- Explore interactive forecast visualization
+- Download forecast as CSV
+
+**Executive Summary:**
+The forecast provides:
+- Full-year 2026 revenue projections with three scenarios
+- Growth percentages vs. 2025
+- Peak and trough months
+- Monthly breakdowns with prediction intervals
+
+### 4. Model Diagnostics
+
+Navigate to **📉 Model Diagnostics** to:
+- Compare Prophet performance against naive benchmarks
+- View detailed performance metrics (MAPE, RMSE, Bias, Coverage)
+- Analyze model components (trend with changepoints, yearly seasonality)
+- Examine residual plots for model validation
+
+**Performance Metrics:**
+- **MAE**: Mean Absolute Error in GHS
+- **MAPE**: Mean Absolute Percentage Error (scale-free)
+- **Bias**: Detects systematic over/under-forecasting
+- **Coverage**: % of actuals within 90% prediction interval
+
+## 🔧 Configuration
+
+### Model Parameters
+
+**Baseline Configuration (Prophet Defaults):**
+- Seasonality mode: Additive
+- Changepoint prior scale: 0.05
+- Interval width: 90%
+
+**Tuned Configuration (Optimized):**
+- Seasonality mode: Multiplicative
+- Changepoint prior scale: 0.50
+- Interval width: 90%
+
+The tuned configuration improves MAPE by ~44% and reduces bias from +9.5% to +0.4% compared to baseline.
+
+### Advanced Customization
+
+Use the "Advanced: Customize Parameters" expander in the Forecasting page to adjust:
+- Changepoint prior scale (0.01 - 1.0): Controls trend flexibility
+- Seasonality mode (additive/multiplicative): How seasonality scales
+- Forecast horizon (6-24 months): Projection period
+- Interval width (80-95%): Confidence level
+
+## 📁 Project Structure
+
+```
+revenue_forecast_dashboard/
+├── app.py                          # Main Streamlit application
+├── requirements.txt                # Python dependencies
+├── README.md                       # This file
+├── utils/
+│   ├── __init__.py                # Utils package initialization
+│   ├── data_processing.py         # Data loading and cleaning functions
+│   ├── modeling.py                # Prophet model training and evaluation
+│   └── visualizations.py          # Plotly visualization functions
+└── data/
+    └── Branch_Revenue_Forecasting_Raw_Dataset.xlsx  # Sample dataset (optional)
+```
+
+## 📈 Data Requirements
+
+Your Excel file should contain a sheet named "Raw_Data" with the following columns:
+
+**Required Columns:**
+- `Report_Month`: Date column (supports multiple formats: YYYY-MM-DD, DD/MM/YYYY, DD-Mon-YYYY, etc.)
+- `Branch_Code`: Branch identifier (e.g., BR-001, BR-002)
+- `Monthly_Revenue_GHS`: Revenue values (handles currency symbols, thousands separators)
+
+**Optional Columns:**
+- Additional branch attributes (Region, Branch_Type, Customer_Segment, etc.)
+- Financial metrics (COGS, Operating_Expenses, Working_Capital, etc.)
+
+The cleaning pipeline automatically handles:
+- Multiple date formats
+- Currency symbols and formatting
+- Missing value placeholders (N/A, null, unknown, etc.)
+- Case inconsistencies
+- Leading/trailing whitespace
+- Overlapping reporting granularities (critical for accurate aggregation)
+
+## 🎯 Key Findings
+
+The original Jupyter notebook analysis revealed:
+
+1. **Data Quality Crisis:** Raw exports contained overlapping granularities (weekly + daily + monthly records for the same revenue). Naive aggregation double-counts by 100%+.
+
+2. **Business Growth:** Chain revenue grew from ~GHS 5m to GHS 12-16m/month (2020-2025). Growth accelerated 2023-2024 due to 10-branch expansion.
+
+3. **Seasonality:** Stable multiplicative pattern with December running 22% above annual average, August/September 8% below.
+
+4. **Model Performance:** Tuned Prophet achieves single-digit MAPE on held-out 2025 test year, beating seasonal naive benchmark by wide margin.
+
+5. **Limitations:** Prediction intervals narrower than ideal (75% vs. 90% coverage), no causal factors, chain-level only.
+
+## ⚠️ Important Notes
+
+### Assumptions and Limitations
+
+1. **Trend Extrapolation:** The forecast assumes current growth momentum (driven by 2024 branch expansion) continues. If no new branches open in 2026, actual growth will likely fall below the expected case.
+
+2. **No Causal Modeling:** Prophet doesn't account for external factors (competitor entry, inflation, interest rates, consumer confidence).
+
+3. **Narrow Intervals:** The 90% prediction intervals are measurably too narrow (75% actual coverage). For credit facility sizing, add a safety margin beyond the lower bound.
+
+4. **Chain-Level Only:** Aggregated forecast hides branch-level variation. Underperforming branches may be masked by strong performers.
+
+5. **Short Sample:** Six years of yearly seasonality is adequate but not ideal. Structural changes in trading patterns need several years to manifest.
+
+### Recommendations
+
+**For Credit Applications:**
+- Present the **expected case** as the central projection
+- Size facility against the **90% lower bound** with explicit disclosure
+- State clearly that projection assumes continued expansion momentum
+- Include changepoint evidence showing growth acceleration is measurable, not asserted
+
+**For Data Governance:**
+- Add explicit `period_type` column to exports to prevent future granularity issues
+- Standardize source systems on a single reporting period
+- Validate that row counts align with expected branch-months each cycle
+
+## 🛠️ Troubleshooting
+
+### Common Issues
+
+**"Sample dataset not found"**
+- Place `Branch_Revenue_Forecasting_Raw_Dataset.xlsx` in the `data/` folder, or
+- Use "Upload Excel File" option instead
+
+**"Error loading data: Missing 'Raw_Data' sheet"**
+- Ensure your Excel file has a sheet named "Raw_Data"
+- Check that sheet name is spelled correctly (case-sensitive)
+
+**"Prophet training is slow"**
+- Normal: Prophet can take 30-60 seconds to fit
+- Check CPU usage; background tasks may slow training
+- Reduce dataset size by filtering to most recent years
+
+**Model performance lower than expected**
+- Verify data quality on Data Quality page
+- Check that naive aggregation issue has been addressed
+- Try tuned parameters instead of baseline
+- Ensure train/test split is chronologically correct
+
+## 📚 References
+
+**Method:**
+- Taylor, S. J., & Letham, B. (2018). Forecasting at scale. The American Statistician, 72(1), 37-45.
+- Prophet Documentation: https://facebook.github.io/prophet/
+
+**Implementation:**
+- Based on Jupyter notebook: `Prophet_Branch_Revenue_Forecasting.ipynb`
+- All cleaning logic, model parameters, and evaluation metrics match notebook specifications
+
+## 📝 License
+
+This dashboard is provided as-is for forecasting and analysis purposes. Modify freely for your use case.
+
+## 👥 Support
+
+For questions or issues:
+1. Check this README for common solutions
+2. Review the original Jupyter notebook for methodology details
+3. Verify data format matches requirements
+
+## 🔄 Version History
+
+**v1.0** - Initial release
+- Complete data cleaning pipeline
+- Baseline and tuned Prophet models
+- Interactive visualizations with Plotly
+- Four-page dashboard: Overview, Data Quality, Forecasting, Diagnostics
+- Sample dataset support + file upload
+- Comprehensive documentation

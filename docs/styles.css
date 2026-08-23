@@ -44,6 +44,12 @@ h1 { font-size: clamp(4.2rem, 8.5vw, 8.2rem); line-height: .91; max-width: 800px
 .work-section, .approach-section { margin: 0 auto; max-width: 1240px; padding: 130px 36px; }
 .section-heading h2 { font-size: clamp(2.5rem, 5vw, 5rem); line-height: .98; max-width: 700px; }
 .project-card { background: var(--teal-deep); color: var(--white); display: grid; grid-template-columns: 1fr 1fr; margin-top: 70px; min-height: 580px; overflow: hidden; }
+.project-card-secondary { margin-top: 24px; }
+.project-aside-secondary { background: #174b68; }
+.bi-preview { align-items: end; border-bottom: 1px solid #4b8297; border-left: 1px solid #4b8297; display: flex; gap: 16px; height: 220px; margin-top: 70px; padding: 0 20px 0 28px; position: relative; }
+.bi-bar { background: var(--lime); opacity: .9; width: 48px; }
+.bar-one { height: 75px; }.bar-two { height: 130px; }.bar-three { height: 100px; }.bar-four { height: 175px; }
+.bi-line { border-top: 3px solid var(--coral); left: 15px; position: absolute; right: 10px; top: 80px; transform: rotate(-9deg); }
 .project-main { padding: 54px; }
 .project-number, .chart-label { color: var(--lime); font-size: .7rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
 .project-main h3 { font-size: clamp(3rem, 5.4vw, 5.7rem); line-height: .9; margin: 75px 0 28px; }
@@ -94,6 +100,7 @@ h1 { font-size: clamp(4.2rem, 8.5vw, 8.2rem); line-height: .91; max-width: 800px
   .proof-strip div:last-child { border-bottom: 0; }
   .work-section, .approach-section { padding: 90px 20px; }
   .project-card { display: block; margin-top: 45px; }
+  .project-card-secondary { margin-top: 24px; }
   .project-main, .project-aside { padding: 34px 25px; }
   .project-main h3 { font-size: 3.5rem; margin-top: 65px; }
   .project-aside { min-height: 450px; }

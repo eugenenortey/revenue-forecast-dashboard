@@ -17,7 +17,6 @@ This dashboard implements a complete time series forecasting workflow based on F
 - 12-month revenue forecast with 90% prediction intervals
 - Three-scenario analysis (worst/expected/best case) for credit applications
 - Model diagnostics including changepoint detection and residual analysis
-- Embedded public Power BI report view
 
 ## Portfolio Site
 
@@ -25,7 +24,6 @@ This repository also contains a static portfolio site in `docs/`. GitHub Pages d
 `.github/workflows/pages.yml`, while the Streamlit dashboard remains hosted separately on Streamlit
 Community Cloud. The portfolio links to both the live dashboard and this source repository.
 
-The dashboard also includes a **Power BI Report** view using the supplied public Power BI link.
 
 ## 🚀 Quick Start
 

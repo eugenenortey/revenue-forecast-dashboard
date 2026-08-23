@@ -18,6 +18,12 @@ This dashboard implements a complete time series forecasting workflow based on F
 - Three-scenario analysis (worst/expected/best case) for credit applications
 - Model diagnostics including changepoint detection and residual analysis
 
+## Portfolio Site
+
+This repository also contains a static portfolio site in `docs/`. GitHub Pages deploys it through
+`.github/workflows/pages.yml`, while the Streamlit dashboard remains hosted separately on Streamlit
+Community Cloud. The portfolio links to both the live dashboard and this source repository.
+
 ## 🚀 Quick Start
 
 ### Prerequisites

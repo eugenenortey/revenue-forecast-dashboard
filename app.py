@@ -6,6 +6,7 @@ Based on the Jupyter notebook: Prophet_Branch_Revenue_Forecasting.ipynb
 """
 
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -15,6 +16,8 @@ import sys
 sys.path.append(str(Path(__file__).parent))
 
 from utils import data_processing, modeling, visualizations
+
+POWER_BI_URL = "https://app.powerbi.com/view?r=eyJrIjoiMGI4MTJlYTYtNjZiOC00YTMwLTk3NDYtOWM3ZjBmODNhYWNiIiwidCI6Ijk0MWJiZjVmLWYyYzAtNDg3NS1hMjRjLTY5MDc4NjVkMjUxYSIsImMiOjh9"
 
 # Page configuration
 st.set_page_config(
@@ -95,7 +98,7 @@ def sidebar():
     # Navigation
     page = st.sidebar.radio(
         "Navigate to:",
-        ["🏠 Overview", "📊 Data Quality", "🔮 Forecasting", "📉 Model Diagnostics"],
+        ["🏠 Overview", "📊 Data Quality", "🔮 Forecasting", "📉 Model Diagnostics", "📊 Power BI Report"],
         index=0
     )
     
@@ -618,7 +621,8 @@ def page_diagnostics():
         - **Bias**: Mean signed percentage error - Detects systematic over/under-forecasting (closer to 0 is better)
         - **Coverage**: % of actuals within 90% prediction interval (should be close to 90%)
         """)
-    
+
+
     # Visualization
     fig = visualizations.plot_model_comparison(comparison_df)
     st.plotly_chart(fig, use_container_width=True)
@@ -784,6 +788,17 @@ def page_diagnostics():
         """)
 
 
+def page_power_bi():
+    """Render the public Power BI report inside the dashboard."""
+    st.markdown('<div class="main-header">📊 Power BI Report</div>', unsafe_allow_html=True)
+    st.markdown(
+        "Use the embedded report for interactive business intelligence views. "
+        "The report is public and does not expose the private Excel upload used by the forecasting workflow."
+    )
+    components.iframe(POWER_BI_URL, height=850, scrolling=True)
+    st.markdown(f"[Open the Power BI report in a new tab]({POWER_BI_URL})")
+
+
 def main():
     """Main application."""
     initialize_session_state()
@@ -800,6 +815,8 @@ def main():
         page_forecasting()
     elif page == "📉 Model Diagnostics":
         page_diagnostics()
+    elif page == "📊 Power BI Report":
+        page_power_bi()
 
 
 if __name__ == "__main__":

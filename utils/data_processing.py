@@ -18,6 +18,31 @@ CURRENCY_COLS = ["Monthly_Revenue_GHS", "COGS_GHS", "Operating_Expenses_GHS",
                  "Inventory_GHS", "Working_Capital_GHS", "Avg_Transaction_Value_GHS"]
 
 
+def create_demo_dataset():
+    """Create a deterministic, public-safe dataset for dashboard exploration."""
+    rng = np.random.default_rng(42)
+    months = pd.date_range('2020-01-01', '2025-12-01', freq='MS')
+    rows = []
+
+    for month in months:
+        for branch_number in range(1, 31):
+            base = 150000 + branch_number * 9000
+            trend = 1 + 0.012 * ((month.year - 2020) * 12 + month.month - 1)
+            expansion = 1.18 if month.year >= 2024 and branch_number > 20 else 1
+            seasonal = 1.22 if month.month == 12 else 0.92 if month.month in (8, 9) else 1
+            revenue = base * trend * expansion * seasonal * rng.normal(1, 0.035)
+            branch_code = f"BR-{branch_number:03d}"
+            date_value = month.strftime('%Y-%m-%d')
+            revenue_value = f"GHS {revenue:,.2f}" if branch_number % 4 == 0 else f"{revenue:.2f}"
+            rows.append({
+                'Report_Month': date_value,
+                'Branch_Code': branch_code,
+                'Monthly_Revenue_GHS': revenue_value,
+            })
+
+    return pd.DataFrame(rows)
+
+
 def load_excel_data(file_path):
     """
     Load Excel file with all columns as strings initially.
@@ -29,6 +54,8 @@ def load_excel_data(file_path):
         DataFrame with raw data, all columns as strings
     """
     try:
+        if isinstance(file_path, pd.DataFrame):
+            return file_path.copy(), {'Raw_Data': file_path.copy()}
         if isinstance(file_path, str):
             sheets = pd.read_excel(file_path, sheet_name=None)
         else:

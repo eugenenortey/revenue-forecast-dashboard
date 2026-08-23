@@ -121,17 +121,10 @@ def sidebar():
             if st.sidebar.button("Load Uploaded Data"):
                 load_data(uploaded_file)
     else:
-        # Use sample dataset
-        sample_path = Path(__file__).parent / "data" / "Branch_Revenue_Forecasting_Raw_Dataset.xlsx"
-        if not sample_path.exists():
-            # Try the original location
-            sample_path = Path(r"c:\Users\Papson\Downloads\Branch_Revenue_Forecasting_Raw_Dataset.xlsx")
-        
-        if st.sidebar.button("Load Sample Dataset") or not st.session_state.data_loaded:
-            if sample_path.exists():
-                load_data(sample_path)
-            else:
-                st.sidebar.error("Sample dataset not found. Please upload your own file.")
+        # Use a generated public-safe demo dataset; real client data is never bundled.
+        if st.sidebar.button("Load Demo Dataset") or not st.session_state.data_loaded:
+            load_data(data_processing.create_demo_dataset())
+        st.sidebar.caption("Demo data is synthetic. Upload the private Excel export for real analysis.")
     
     st.sidebar.markdown("---")
     

@@ -8,6 +8,7 @@ venv/
 # Local data and secrets
 *.xlsx
 *.xls
+!data/Branch_Revenue_Forecasting_Raw_Dataset.xlsx
 .env
 .streamlit/secrets.toml
 

@@ -1,326 +1,169 @@
-"""
-Prophet modeling utilities for revenue forecasting dashboard.
-Handles model training, evaluation, cross-validation, and forecasting.
-"""
+"""Prophet model configuration, evaluation, and forecasting.
 
-import pandas as pd
+Ports Sections 10-17 of the source notebook: baseline vs. cross-validated
+tuned Prophet configs, the evaluation-metric formulas, naive benchmarks,
+and the final 12-month forecast with scenario bands.
+"""
+from pathlib import Path
+
 import numpy as np
+import pandas as pd
+import streamlit as st
 from prophet import Prophet
-from prophet.diagnostics import cross_validation, performance_metrics
-import warnings
-import logging
 
-# Suppress Prophet logging
-warnings.filterwarnings("ignore")
-logging.getLogger("cmdstanpy").setLevel(logging.CRITICAL)
-logging.getLogger("cmdstanpy").disabled = True
-logging.getLogger("prophet").setLevel(logging.CRITICAL)
+CV_RESULTS_PATH = Path(__file__).resolve().parent.parent / "case_study" / "cv_grid_results.csv"
 
+SPLIT_DATE = "2025-01-01"
+FORECAST_HORIZON = 12
 
-# Model configurations
-BASELINE_PARAMS = {
-    'growth': 'linear',
-    'seasonality_mode': 'additive',
-    'changepoint_prior_scale': 0.05,
-    'seasonality_prior_scale': 10.0,
-    'yearly_seasonality': True,
-    'weekly_seasonality': False,
-    'daily_seasonality': False,
-    'interval_width': 0.90,
+BASELINE_PARAMS = dict(
+    growth="linear",
+    seasonality_mode="additive",       # Prophet default — deliberately not yet tuned
+    changepoint_prior_scale=0.05,      # Prophet default
+    seasonality_prior_scale=10.0,      # Prophet default
+    yearly_seasonality=True,
+    weekly_seasonality=False,          # impossible to identify from monthly data
+    daily_seasonality=False,           # impossible to identify from monthly data
+    interval_width=0.90,               # 90% band for credit purposes
+)
+
+# Chosen from a 48-combination rolling-origin CV grid search (case_study/cv_grid_results.csv),
+# NOT the single lowest-RMSE row (rank 10 of 48, +3.6% RMSE vs. the best config). The top row
+# (changepoint_prior_scale=0.50) fits the training window best but is too flexible for a
+# 12-month-ahead extrapolation; 0.10 trades a little in-sample CV RMSE for a more stable trend.
+FINAL_PARAMS = dict(
+    growth="linear",
+    changepoint_prior_scale=0.10,
+    seasonality_prior_scale=10.0,
+    seasonality_mode="multiplicative",
+    yearly_seasonality=10,
+    weekly_seasonality=False,
+    daily_seasonality=False,
+    interval_width=0.90,
+)
+
+CV_SETTINGS = dict(initial="1278 days", period="183 days", horizon="365 days")
+CV_PARAM_GRID = {
+    "changepoint_prior_scale": [0.05, 0.10, 0.50],
+    "seasonality_prior_scale": [1.0, 10.0],
+    "seasonality_mode": ["additive", "multiplicative"],
+    "yearly_seasonality": [3, 4, 6, 10],
 }
 
-TUNED_PARAMS = {
-    'growth': 'linear',
-    'seasonality_mode': 'multiplicative',
-    'changepoint_prior_scale': 0.50,
-    'seasonality_prior_scale': 10.0,
-    'yearly_seasonality': True,
-    'weekly_seasonality': False,
-    'daily_seasonality': False,
-    'interval_width': 0.90,
-}
+
+def to_prophet_df(chain_monthly: pd.DataFrame) -> pd.DataFrame:
+    df = (chain_monthly[["ds", "revenue"]]
+          .rename(columns={"revenue": "y"})
+          .sort_values("ds")
+          .reset_index(drop=True))
+    df["ds"] = pd.to_datetime(df["ds"])
+    return df
 
 
-def split_train_test(df, split_date='2025-01-01'):
-    """
-    Split data into train and test sets chronologically.
-    
-    Args:
-        df: Prophet-formatted DataFrame with 'ds' and 'y' columns
-        split_date: Date to split on (test set starts here)
-        
-    Returns:
-        train_df, test_df
-    """
-    split_date = pd.to_datetime(split_date)
-    train = df[df['ds'] < split_date].copy()
-    test = df[df['ds'] >= split_date].copy()
-    
+def split_train_test(prophet_df: pd.DataFrame, split_date: str = SPLIT_DATE):
+    train = prophet_df[prophet_df["ds"] < split_date].copy()
+    test = prophet_df[prophet_df["ds"] >= split_date].copy()
     return train, test
 
 
-def evaluate_model(y_true, y_pred, lower=None, upper=None, label=""):
-    """
-    Evaluate model performance with multiple metrics.
-    
-    Metrics:
-    - MAE: Mean Absolute Error (directly interpretable)
-    - RMSE: Root Mean Squared Error (penalizes large errors)
-    - MAPE: Mean Absolute Percentage Error (scale-free)
-    - sMAPE: Symmetric MAPE (balanced over/under-forecasting)
-    - Bias: Mean signed percentage error (detects systematic over/under-forecasting)
-    - Coverage: % of actuals within prediction interval
-    
-    Args:
-        y_true: Actual values
-        y_pred: Predicted values
-        lower: Lower bound of prediction interval (optional)
-        upper: Upper bound of prediction interval (optional)
-        label: Model label
-        
-    Returns:
-        Dictionary with evaluation metrics
-    """
+# --- Evaluation metrics (exact formulas from the notebook) ----------------------------------
+
+def evaluate(y_true, y_pred, lower=None, upper=None, label=""):
     y_true = np.asarray(y_true, dtype=float)
     y_pred = np.asarray(y_pred, dtype=float)
     err = y_true - y_pred
-    
-    metrics = {
-        'model': label,
-        'MAE': np.mean(np.abs(err)),
-        'RMSE': np.sqrt(np.mean(err ** 2)),
-        'MAPE_%': np.mean(np.abs(err / y_true)) * 100,
-        'sMAPE_%': np.mean(2 * np.abs(err) / (np.abs(y_true) + np.abs(y_pred))) * 100,
-        'Bias_%': np.mean(err / y_true) * 100,
+    out = {
+        "model": label,
+        "MAE": np.mean(np.abs(err)),
+        "RMSE": np.sqrt(np.mean(err ** 2)),
+        "MAPE_%": np.mean(np.abs(err / y_true)) * 100,
+        "sMAPE_%": np.mean(2 * np.abs(err) / (np.abs(y_true) + np.abs(y_pred))) * 100,
+        "Bias_%": np.mean(err / y_true) * 100,
     }
-    
-    if lower is not None and upper is not None:
-        coverage = np.mean((y_true >= np.asarray(lower)) & (y_true <= np.asarray(upper))) * 100
-        metrics['Coverage_%'] = coverage
-    
-    return metrics
+    if lower is not None:
+        out["Coverage_%"] = np.mean((y_true >= np.asarray(lower)) & (y_true <= np.asarray(upper))) * 100
+    return out
 
 
-def create_naive_benchmarks(train_df, test_df):
-    """
-    Create naive forecast benchmarks for comparison.
-    
-    1. Seasonal naive: This month next year = same month last year
-    2. Drift naive: Last value + average historical monthly increment
-    
-    Returns:
-        DataFrame with benchmark forecasts and metrics
-    """
-    # Create full series for seasonal naive
-    full_series = pd.concat([train_df, test_df]).set_index('ds')['y']
-    
-    # Seasonal naive: shift by 12 months
-    seasonal_naive = full_series.shift(12).loc[test_df['ds']].values
-    
-    # Drift naive
-    drift_increment = train_df['y'].diff().mean()
-    drift = train_df['y'].iloc[-1] + (drift_increment * np.arange(1, len(test_df) + 1))
-    
-    # Evaluate benchmarks
-    benchmarks = pd.DataFrame([
-        evaluate_model(test_df['y'], seasonal_naive, label='Seasonal naive (y[t-12])'),
-        evaluate_model(test_df['y'], drift, label='Drift naive'),
-    ])
-    
-    return benchmarks
+def seasonal_naive_forecast(train: pd.DataFrame, test: pd.DataFrame) -> np.ndarray:
+    # This month next year = same month last year.
+    lookup = train.set_index("ds")["y"]
+    preds = []
+    for ds in test["ds"]:
+        ref = ds - pd.DateOffset(years=1)
+        preds.append(lookup.get(ref, np.nan))
+    return np.array(preds)
 
 
-def train_prophet_model(train_df, params=None):
-    """
-    Train Prophet model with given parameters.
-    
-    Args:
-        train_df: Training data (Prophet format with 'ds' and 'y')
-        params: Dictionary of Prophet parameters (uses BASELINE_PARAMS if None)
-        
-    Returns:
-        Fitted Prophet model
-    """
-    if params is None:
-        params = BASELINE_PARAMS.copy()
-    
+def drift_naive_forecast(train: pd.DataFrame, test: pd.DataFrame) -> np.ndarray:
+    last_value = train["y"].iloc[-1]
+    mean_diff = train["y"].diff().mean()
+    return np.array([last_value + mean_diff * (i + 1) for i in range(len(test))])
+
+
+def compute_benchmarks(train: pd.DataFrame, test: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    sn = seasonal_naive_forecast(train, test)
+    rows.append(evaluate(test["y"], sn, label="Seasonal naive"))
+    dn = drift_naive_forecast(train, test)
+    rows.append(evaluate(test["y"], dn, label="Drift naive"))
+    return pd.DataFrame(rows)
+
+
+# --- Prophet fitting --------------------------------------------------------------------------
+
+@st.cache_resource(show_spinner=False)
+def fit_and_evaluate(params: dict, train: pd.DataFrame, test: pd.DataFrame, label: str) -> dict:
     model = Prophet(**params)
-    model.fit(train_df)
-    
-    return model
-
-
-def forecast_model(model, train_df, test_df=None, periods=12, freq='MS'):
-    """
-    Generate forecast from trained model.
-    
-    Args:
-        model: Fitted Prophet model
-        train_df: Training data
-        test_df: Test data (optional, for backtesting)
-        periods: Number of periods to forecast forward (if test_df is None)
-        freq: Frequency of forecast ('MS' for month start)
-        
-    Returns:
-        forecast_df: Full forecast DataFrame
-        test_forecast: Test period forecast (if test_df provided)
-    """
-    if test_df is not None:
-        # Make future dataframe for train + test period
-        future = model.make_future_dataframe(periods=len(test_df), freq=freq)
-    else:
-        # Make future dataframe for specified periods
-        future = model.make_future_dataframe(periods=periods, freq=freq)
-    
+    model.fit(train)
+    future = model.make_future_dataframe(periods=len(test), freq="MS")
     forecast = model.predict(future)
-    
-    if test_df is not None:
-        # Extract test period forecast
-        test_forecast = forecast[forecast['ds'].isin(test_df['ds'])].copy()
-        return forecast, test_forecast
-    else:
-        # Return future forecast only
-        future_forecast = forecast[forecast['ds'] > train_df['ds'].max()].copy()
-        return forecast, future_forecast
+    test_forecast = forecast[forecast["ds"].isin(test["ds"])].reset_index(drop=True)
+    metrics = evaluate(test["y"].values, test_forecast["yhat"].values,
+                        test_forecast["yhat_lower"].values, test_forecast["yhat_upper"].values,
+                        label=label)
+    return {"model": model, "forecast": forecast, "test_forecast": test_forecast, "metrics": metrics}
 
 
-def run_cross_validation(model, train_df, initial='1460 days', period='90 days', horizon='365 days'):
-    """
-    Run time series cross-validation.
-    
-    Args:
-        model: Fitted Prophet model
-        train_df: Training data
-        initial: Initial training period
-        period: Period between cutoff dates
-        horizon: Forecast horizon
-        
-    Returns:
-        cv_results: Cross-validation results
-        cv_metrics: Performance metrics
-    """
-    try:
-        cv_results = cross_validation(
-            model,
-            initial=initial,
-            period=period,
-            horizon=horizon,
-            parallel='processes'
-        )
-        
-        cv_metrics = performance_metrics(cv_results, rolling_window=0.1)
-        
-        return cv_results, cv_metrics
-    except Exception as e:
-        print(f"Cross-validation error: {str(e)}")
-        return None, None
+@st.cache_resource(show_spinner=False)
+def fit_final_forecast(params: dict, prophet_df: pd.DataFrame, horizon: int = FORECAST_HORIZON) -> dict:
+    model = Prophet(**params)
+    model.fit(prophet_df)
+    future = model.make_future_dataframe(periods=horizon, freq="MS")
+    forecast = model.predict(future)
+    future_only = forecast[forecast["ds"] > prophet_df["ds"].max()].reset_index(drop=True)
+    return {"model": model, "forecast": forecast, "future": future_only}
 
 
-def compare_models(train_df, test_df, model_configs=None):
-    """
-    Compare multiple model configurations.
-    
-    Args:
-        train_df: Training data
-        test_df: Test data
-        model_configs: Dictionary of {name: params} (uses baseline and tuned if None)
-        
-    Returns:
-        DataFrame with comparison metrics
-    """
-    if model_configs is None:
-        model_configs = {
-            'Baseline': BASELINE_PARAMS,
-            'Tuned': TUNED_PARAMS,
-        }
-    
-    results = []
-    
-    # Add naive benchmarks
-    benchmarks = create_naive_benchmarks(train_df, test_df)
-    results.append(benchmarks)
-    
-    # Train and evaluate each model
-    for name, params in model_configs.items():
-        model = train_prophet_model(train_df, params)
-        _, test_forecast = forecast_model(model, train_df, test_df)
-        
-        metrics = evaluate_model(
-            test_df['y'],
-            test_forecast['yhat'],
-            test_forecast['yhat_lower'],
-            test_forecast['yhat_upper'],
-            label=f'Prophet {name}'
-        )
-        
-        results.append(pd.DataFrame([metrics]))
-    
-    comparison = pd.concat(results, ignore_index=True)
-    
-    return comparison
+def scenario_summary(future_forecast: pd.DataFrame, actual_prior_year: float | None = None) -> dict:
+    expected = future_forecast["yhat"].sum()
+    worst = future_forecast["yhat_lower"].sum()
+    best = future_forecast["yhat_upper"].sum()
+    out = {"worst": worst, "expected": expected, "best": best}
+    if actual_prior_year:
+        out["growth_worst_%"] = (worst / actual_prior_year - 1) * 100
+        out["growth_expected_%"] = (expected / actual_prior_year - 1) * 100
+        out["growth_best_%"] = (best / actual_prior_year - 1) * 100
+    peak_row = future_forecast.loc[future_forecast["yhat"].idxmax()]
+    trough_row = future_forecast.loc[future_forecast["yhat"].idxmin()]
+    out["peak_month"] = peak_row["ds"]
+    out["peak_value"] = peak_row["yhat"]
+    out["trough_month"] = trough_row["ds"]
+    out["trough_value"] = trough_row["yhat"]
+    return out
 
 
-def generate_forecast_summary(forecast_df, actual_2025_revenue=None):
-    """
-    Generate executive summary of forecast with three scenarios.
-    
-    Args:
-        forecast_df: Future forecast DataFrame
-        actual_2025_revenue: Actual 2025 revenue for growth calculation (optional)
-        
-    Returns:
-        DataFrame with worst/expected/best case scenarios
-    """
-    # Calculate totals
-    f_2026 = forecast_df['yhat'].sum()
-    lo_2026 = forecast_df['yhat_lower'].sum()
-    hi_2026 = forecast_df['yhat_upper'].sum()
-    
-    summary_data = {
-        'Scenario': ['Worst case (90% lower)', 'Expected case', 'Best case (90% upper)'],
-        '2026 revenue (GHS m)': [lo_2026 / 1e6, f_2026 / 1e6, hi_2026 / 1e6],
-    }
-    
-    if actual_2025_revenue is not None:
-        summary_data['Growth vs 2025 (%)'] = [
-            (lo_2026 / actual_2025_revenue - 1) * 100,
-            (f_2026 / actual_2025_revenue - 1) * 100,
-            (hi_2026 / actual_2025_revenue - 1) * 100,
-        ]
-    
-    summary = pd.DataFrame(summary_data)
-    
-    # Add peak/trough information
-    peak_idx = forecast_df['yhat'].idxmax()
-    trough_idx = forecast_df['yhat'].idxmin()
-    
-    peak_month = forecast_df.loc[peak_idx, 'ds'].strftime('%b %Y')
-    trough_month = forecast_df.loc[trough_idx, 'ds'].strftime('%b %Y')
-    peak_value = forecast_df.loc[peak_idx, 'yhat'] / 1e6
-    trough_value = forecast_df.loc[trough_idx, 'yhat'] / 1e6
-    
-    return summary, {
-        'peak_month': peak_month,
-        'peak_value': peak_value,
-        'trough_month': trough_month,
-        'trough_value': trough_value
-    }
+# --- CV grid (precomputed — see scripts/build_cv_results.py) --------------------------------
+
+@st.cache_data(show_spinner=False)
+def load_cv_results() -> pd.DataFrame:
+    if not CV_RESULTS_PATH.exists():
+        return pd.DataFrame()
+    return pd.read_csv(CV_RESULTS_PATH)
 
 
-def get_model_components(model, forecast_df):
-    """
-    Extract Prophet model components for visualization.
-    
-    Returns:
-        Dictionary with trend, seasonality, and changepoints
-    """
-    components = {
-        'trend': forecast_df[['ds', 'trend']].copy(),
-        'yearly': forecast_df[['ds', 'yearly']].copy() if 'yearly' in forecast_df.columns else None,
-        'changepoints': pd.DataFrame({
-            'ds': model.changepoints,
-            'delta': model.params['delta'].mean(axis=0) if hasattr(model, 'params') else [0] * len(model.changepoints)
-        }),
-    }
-    
-    return components
+def cv_shortlist(cv_table: pd.DataFrame, tolerance: float = 1.05) -> pd.DataFrame:
+    if cv_table.empty:
+        return cv_table
+    best_rmse = cv_table["cv_rmse"].min()
+    return cv_table[cv_table["cv_rmse"] <= best_rmse * tolerance].sort_values("cv_rmse").reset_index(drop=True)

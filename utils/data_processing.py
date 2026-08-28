@@ -1,15 +1,21 @@
-"""
-Data processing utilities for revenue forecasting dashboard.
-Handles data loading, cleaning, and aggregation following the notebook's methodology.
-"""
+"""Data loading and cleaning pipeline.
 
-import pandas as pd
-import numpy as np
+This is a direct port of Sections 6-9 of the source notebook
+(Prophet_Branch_Revenue_Forecasting.ipynb) — the raw-data audit and the
+row-by-row cleaning pipeline that resolves overlapping daily/weekly/monthly
+reporting granularity. Every function here mirrors the notebook's own
+cell source, not a re-derivation, so the row counts it produces on the
+bundled dataset should match the notebook's printed audit trail exactly.
+"""
 import re
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
+import streamlit as st
 
-# Constants
+DATA_PATH = Path(__file__).resolve().parent.parent / "data" / "Branch_Revenue_Forecasting_Raw_Dataset.xlsx"
+
 PLACEHOLDERS = {"n/a", "na", "nan", "none", "null", "unknown", "-", "?",
                 "missing", "999999", "not recorded", "tbd", ""}
 
@@ -17,70 +23,28 @@ CURRENCY_COLS = ["Monthly_Revenue_GHS", "COGS_GHS", "Operating_Expenses_GHS",
                  "Accounts_Receivable_GHS", "Accounts_Payable_GHS",
                  "Inventory_GHS", "Working_Capital_GHS", "Avg_Transaction_Value_GHS"]
 
+TYPO_FIXES = {
+    "Branch_Type":      {"Standrad": "Standard", "Flag Ship": "Flagship", "Kios": "Kiosk"},
+    "Customer_Segment": {"Retial": "Retail", "S.M.E": "SME", "Sme": "SME", "Corperate": "Corporate"},
+    "Region":           {"Gt. Accra": "Greater Accra", "Accara": "Accra",
+                          "Ashanti Region": "Ashanti", "Greater Accra Region": "Greater Accra"},
+}
 
-def create_demo_dataset():
-    """Create a deterministic, public-safe dataset for dashboard exploration."""
-    rng = np.random.default_rng(42)
-    months = pd.date_range('2020-01-01', '2025-12-01', freq='MS')
-    rows = []
+BOOL_MAP = {"yes": True, "y": True, "true": True, "1": True,
+            "no": False, "n": False, "false": False, "0": False}
 
-    for month in months:
-        for branch_number in range(1, 31):
-            base = 150000 + branch_number * 9000
-            trend = 1 + 0.012 * ((month.year - 2020) * 12 + month.month - 1)
-            expansion = 1.18 if month.year >= 2024 and branch_number > 20 else 1
-            seasonal = 1.22 if month.month == 12 else 0.92 if month.month in (8, 9) else 1
-            revenue = base * trend * expansion * seasonal * rng.normal(1, 0.035)
-            branch_code = f"BR-{branch_number:03d}"
-            date_value = month.strftime('%Y-%m-%d')
-            revenue_value = f"GHS {revenue:,.2f}" if branch_number % 4 == 0 else f"{revenue:.2f}"
-            rows.append({
-                'Report_Month': date_value,
-                'Branch_Code': branch_code,
-                'Monthly_Revenue_GHS': revenue_value,
-            })
-
-    return pd.DataFrame(rows)
+GRANULARITY_LOWER, GRANULARITY_UPPER = 0.4, 2.5
+SENSITIVITY_CONFIGS = [(0.30, 2.00), (0.40, 2.50), (0.50, 3.00), (0.35, 2.20), (0.45, 2.80)]
 
 
-def load_excel_data(file_path):
-    """
-    Load Excel file with all columns as strings initially.
-    
-    Args:
-        file_path: Path to Excel file or file-like object
-        
-    Returns:
-        DataFrame with raw data, all columns as strings
-    """
-    try:
-        if isinstance(file_path, pd.DataFrame):
-            return file_path.copy(), {'Raw_Data': file_path.copy()}
-        if isinstance(file_path, str):
-            sheets = pd.read_excel(file_path, sheet_name=None)
-        else:
-            sheets = pd.read_excel(file_path, sheet_name=None)
-        
-        # Load the raw data sheet with all columns as string
-        raw = pd.read_excel(file_path, sheet_name="Raw_Data", dtype=str)
-        
-        return raw, sheets
-    except Exception as e:
-        raise ValueError(f"Error loading Excel file: {str(e)}")
-
+# --- Section 6/8 core conversion functions (verbatim from the notebook) ------------------
 
 def count_placeholders(series):
-    """Count placeholder text that represents missing values."""
-    return series.dropna().str.strip().str.lower().isin(PLACEHOLDERS).sum()
+    return series.dropna().astype("string").str.strip().str.lower().isin(PLACEHOLDERS).sum()
 
 
 def to_number(value):
-    """
-    Convert messy currency/number string to float.
-    Handles GHS prefix, cedi symbol, thousands separators, and placeholders.
-    
-    Returns NaN if not a real number.
-    """
+    # Convert one messy currency/number string to float. Returns NaN if not a real number.
     if pd.isna(value):
         return np.nan
     t = str(value).replace("GHS", "").replace("₵", "").replace(",", "").strip()
@@ -90,31 +54,19 @@ def to_number(value):
 
 
 def parse_date(value):
-    """
-    Format-aware date parser based on pattern analysis:
-    - slash format (xx/xx/YYYY) -> DD/MM/YYYY (UK convention)
-    - dash format (xx-xx-YYYY) -> MM-DD-YYYY (US convention)
-    - everything else parses unambiguously
-    """
+    # Format-aware date parser: slash format -> DD/MM/YYYY (UK), dash format -> MM-DD-YYYY (US).
     if pd.isna(value):
         return pd.NaT
     t = str(value).strip()
-    
-    # Handle ambiguous formats based on empirical evidence
     if re.fullmatch(r"\d{2}/\d{2}/\d{4}", t):
         return pd.to_datetime(t, format="%d/%m/%Y", errors="coerce")
     if re.fullmatch(r"\d{2}-\d{2}-\d{4}", t):
         return pd.to_datetime(t, format="%m-%d-%Y", errors="coerce")
-    
-    # Unambiguous formats
     return pd.to_datetime(t, errors="coerce", format="mixed")
 
 
 def standardise_branch_code(value):
-    """
-    Standardise branch code to BR-XXX format.
-    Handles: 'br-004', 'BR004', ' BR-004', 'Branch 004' -> 'BR-004'
-    """
+    # 'br-004', 'BR004', ' BR-004', 'Branch 004'  ->  'BR-004'
     if pd.isna(value):
         return np.nan
     t = str(value).strip().upper().replace("_", " ")
@@ -124,214 +76,229 @@ def standardise_branch_code(value):
     return f"BR-{int(m.group(1)):03d}" if m else t
 
 
-def get_data_quality_report(df):
-    """
-    Generate comprehensive data quality report.
-    
-    Returns:
-        Dictionary with quality metrics
-    """
-    report = {}
-    
-    # Basic shape
-    report['total_rows'] = len(df)
-    report['total_columns'] = len(df.columns)
-    
-    # Missing values
-    report['missing_visible'] = df.isna().sum().to_dict()
-    report['missing_placeholders'] = {c: count_placeholders(df[c]) for c in df.columns}
-    
-    # Blank and duplicate rows
-    report['blank_rows'] = df.isna().all(axis=1).sum()
-    report['exact_duplicates'] = df.duplicated(keep='first').sum()
-    
-    # Date format distribution
-    if 'Report_Month' in df.columns:
-        report['date_formats'] = classify_date_formats(df['Report_Month'])
-    
-    # Branch code count
-    if 'Branch_Code' in df.columns:
-        report['unique_branch_codes_raw'] = df['Branch_Code'].nunique()
-    
-    return report
+def clean_text(series):
+    # Collapse whitespace and tabs, strip, title-case.
+    return (series.astype("string")
+                  .str.replace(r"[\t_]+", " ", regex=True)
+                  .str.replace(r"\s+", " ", regex=True)
+                  .str.strip()
+                  .str.title())
 
 
-def classify_date_formats(series):
-    """Classify date format for each value in the series."""
-    def classify_one(value):
-        if pd.isna(value):
-            return "MISSING"
-        v = str(value).strip()
-        patterns = {
-            "ISO  YYYY-MM-DD":   r"\d{4}-\d{2}-\d{2}",
-            "ISO  YYYY/MM/DD":   r"\d{4}/\d{2}/\d{2}",
-            "xx/xx/YYYY":        r"\d{2}/\d{2}/\d{4}",
-            "xx-xx-YYYY":        r"\d{2}-\d{2}-\d{4}",
-            "DD-Mon-YYYY":       r"\d{2}-[A-Za-z]{3}-\d{4}",
-            "Month DD, YYYY":    r"[A-Za-z]+ \d{1,2}, \d{4}",
-        }
-        for label, pat in patterns.items():
-            if re.fullmatch(pat, v):
-                return label
-        return "UNPARSEABLE"
-    
-    return series.map(classify_one).value_counts().to_dict()
+# --- Loading -------------------------------------------------------------------------------
+
+@st.cache_data(show_spinner=False)
+def load_raw():
+    raw = pd.read_excel(DATA_PATH, sheet_name="Raw_Data", dtype=str)
+    data_dict = pd.read_excel(DATA_PATH, sheet_name="Data_Dictionary", header=3).dropna(how="all")
+    issues = pd.read_excel(DATA_PATH, sheet_name="Known_Data_Issues", header=2).dropna(how="all")
+    return raw, data_dict, issues
 
 
-def clean_data(raw_df):
-    """
-    Main cleaning pipeline following notebook methodology.
-    
-    Steps:
-    1. Remove blank rows and exact duplicates
-    2. Standardise branch codes
-    3. Parse dates
-    4. Convert currency columns to numeric
-    5. Filter invalid records (negative revenue, unparseable dates)
-    6. Detect and handle overlapping granularities
-    7. Aggregate to monthly chain-level revenue
-    
-    Returns:
-        clean_df: Cleaned DataFrame
-        monthly_revenue: Final monthly chain revenue series
-        cleaning_stats: Dictionary with cleaning statistics
-    """
-    stats = {}
-    stats['initial_rows'] = len(raw_df)
-    
-    # Step 1: Remove blank rows and exact duplicates
-    df = raw_df.copy()
-    df = df[~df.isna().all(axis=1)]
-    stats['after_blank_removal'] = len(df)
-    stats['blank_rows_removed'] = stats['initial_rows'] - stats['after_blank_removal']
-    
-    df = df[~df.duplicated(keep='first')]
-    stats['after_duplicate_removal'] = len(df)
-    stats['duplicate_rows_removed'] = stats['after_blank_removal'] - stats['after_duplicate_removal']
-    
-    # Step 2: Standardise branch codes
-    raw_branch_count = df['Branch_Code'].nunique(dropna=True)
-    df['branch'] = df['Branch_Code'].map(standardise_branch_code)
-    stats['unique_branches'] = df['branch'].nunique()
-    stats['raw_branch_codes'] = raw_branch_count
-    stats['branch_codes_standardised'] = int((
-        df['Branch_Code'].fillna('').astype(str).str.strip().str.upper() !=
-        df['branch'].fillna('').astype(str)
-    ).sum())
-    
-    # Step 3: Parse dates
-    df['date'] = df['Report_Month'].map(parse_date)
-    stats['unparseable_dates'] = df['date'].isna().sum()
-    stats['placeholder_dates'] = int((df['date'].notna() & (df['date'].dt.year <= 1990)).sum())
-    
-    # Step 4: Convert revenue to numeric
-    df['revenue'] = df['Monthly_Revenue_GHS'].map(to_number)
-    stats['unparseable_revenue'] = df['revenue'].isna().sum()
-    stats['negative_revenue'] = int((df['revenue'] <= 0).sum())
-    
-    # Step 5: Filter invalid records
-    # Remove rows with invalid dates (including 1900 placeholder dates)
-    valid = df[df['date'].notna() & (df['date'].dt.year > 1990)].copy()
-    stats['after_date_filter'] = len(valid)
-    
-    # Remove negative or zero revenue
-    valid = valid[valid['revenue'] > 0].copy()
-    stats['after_revenue_filter'] = len(valid)
-    
-    # Step 6: Handle overlapping granularities
-    # Calculate median revenue per branch-month to detect outliers
-    valid['year_month'] = valid['date'].dt.to_period('M')
-    
-    # For each branch-month, calculate median and filter outliers
-    def filter_branch_month_outliers(group):
-        """
-        Filter outliers within a branch-month using 0.4x-2.5x threshold.
-        This removes overlapping granularity issues (weekly/daily records mixed with monthly summaries).
-        """
-        if len(group) == 1:
-            return group
-        
-        median_rev = group['revenue'].median()
-        # Keep records within 0.4x to 2.5x of median
-        mask = (group['revenue'] >= median_rev * 0.4) & (group['revenue'] <= median_rev * 2.5)
-        return group[mask]
-    
-    cleaned = valid.groupby(['branch', 'year_month'], group_keys=False).apply(filter_branch_month_outliers)
-    stats['after_granularity_filter'] = len(cleaned)
-    stats['granularity_rows_removed'] = stats['after_revenue_filter'] - stats['after_granularity_filter']
-    stats['branch_months_before_filter'] = valid.groupby(['branch', 'year_month']).ngroups
-    stats['branch_months_after_filter'] = cleaned.groupby(['branch', 'year_month']).ngroups
-    
-    # Step 7: Aggregate to monthly chain-level revenue
-    monthly_revenue = (cleaned.groupby('year_month')['revenue']
-                       .sum()
-                       .reset_index()
-                       .rename(columns={'revenue': 'y'}))
-    
-    # Convert Period to datetime (first day of month)
-    monthly_revenue['ds'] = monthly_revenue['year_month'].apply(lambda x: x.to_timestamp())
-    monthly_revenue = monthly_revenue[['ds', 'y']].sort_values('ds').reset_index(drop=True)
-    
-    stats['final_monthly_observations'] = len(monthly_revenue)
-    stats['date_range'] = (monthly_revenue['ds'].min().strftime('%Y-%m-%d'),
-                          monthly_revenue['ds'].max().strftime('%Y-%m-%d'))
-    stats['expected_monthly_observations'] = (
-        (monthly_revenue['ds'].max().year - monthly_revenue['ds'].min().year) * 12
-        + monthly_revenue['ds'].max().month - monthly_revenue['ds'].min().month + 1
+# --- Section 6: raw data quality audit ------------------------------------------------------
+
+def raw_quality_report(raw: pd.DataFrame) -> dict:
+    isna_counts = raw.isna().sum()
+    placeholder_counts = pd.Series(
+        {col: count_placeholders(raw[col]) for col in raw.columns}, dtype="int64"
     )
-    stats['missing_months'] = stats['expected_monthly_observations'] - stats['final_monthly_observations']
-    
-    return cleaned, monthly_revenue, stats
+    true_missing = isna_counts + placeholder_counts
+
+    blank_rows = int(raw.isna().all(axis=1).sum())
+    exact_dupes = int(raw.duplicated(keep="first").sum())
+
+    parsed_dates = raw["Report_Month"].map(parse_date)
+    unparseable_mask = parsed_dates.isna() & raw["Report_Month"].notna()
+    date_fail_examples = raw.loc[unparseable_mask, "Report_Month"].value_counts()
+    placeholder_1900 = int((parsed_dates.dt.year <= 1990).sum())
+
+    revenue_num = raw["Monthly_Revenue_GHS"].map(to_number)
+    headcount_num = raw["Headcount"].map(to_number)
+    footfall_num = raw["Customer_Footfall"].map(to_number)
+
+    categorical_before = {
+        col: raw[col].nunique()
+        for col in ["Branch_Code", "Region", "Branch_Type", "Customer_Segment", "New_Branch_Last_Quarter"]
+    }
+
+    conversion_check = []
+    for col in CURRENCY_COLS:
+        text_missing = int(raw[col].isna().sum() + count_placeholders(raw[col]))
+        numeric_missing = int(raw[col].map(to_number).isna().sum())
+        conversion_check.append({
+            "column": col,
+            "missing_as_text": text_missing,
+            "missing_after_conversion": numeric_missing,
+            "unexplained_loss": numeric_missing - text_missing,
+        })
+
+    return {
+        "n_rows": len(raw),
+        "n_cols": raw.shape[1],
+        "isna_counts": isna_counts,
+        "placeholder_counts": placeholder_counts,
+        "true_missing": true_missing,
+        "blank_rows": blank_rows,
+        "exact_dupes": exact_dupes,
+        "unparseable_dates": int(unparseable_mask.sum()),
+        "placeholder_dates_1900": placeholder_1900,
+        "date_fail_examples": date_fail_examples,
+        "revenue_le_zero": int((revenue_num <= 0).sum()),
+        "headcount_negative_or_sentinel": int((headcount_num.isin([-1, 999, 9999]) | (headcount_num < 0)).sum()),
+        "footfall_negative": int((footfall_num < 0).sum()),
+        "categorical_before": categorical_before,
+        "conversion_check": pd.DataFrame(conversion_check),
+    }
 
 
-def get_naive_aggregation(raw_df):
-    """
-    Create naive aggregation (incorrect - for comparison).
-    This demonstrates what happens if you don't handle overlapping granularities.
-    
-    Returns:
-        DataFrame with naive monthly aggregation
-    """
-    df = raw_df.copy()
-    df['branch'] = df['Branch_Code'].map(standardise_branch_code)
-    df['date'] = df['Report_Month'].map(parse_date)
-    df['revenue'] = df['Monthly_Revenue_GHS'].map(to_number)
-    
-    # Filter to valid records only
-    valid = df[(df['date'].notna()) & 
-               (df['date'].dt.year > 1990) & 
-               (df['revenue'] > 0)].copy()
-    
-    # Naive groupby - this DOUBLE COUNTS due to overlapping granularities
-    valid['year_month'] = valid['date'].dt.to_period('M')
-    naive = (valid.groupby('year_month')['revenue']
-             .sum()
-             .reset_index()
-             .rename(columns={'revenue': 'y'}))
-    
-    naive['ds'] = naive['year_month'].apply(lambda x: x.to_timestamp())
-    naive = naive[['ds', 'y']].sort_values('ds').reset_index(drop=True)
-    
-    return naive
+# --- Section 7.5: naive (wrong) aggregation, for the "before" comparison --------------------
+
+def get_naive_aggregation(raw: pd.DataFrame) -> pd.Series:
+    eda = raw.copy()
+    eda["date"] = eda["Report_Month"].map(parse_date)
+    eda["revenue"] = eda["Monthly_Revenue_GHS"].map(to_number)
+    valid = eda.dropna(subset=["date"])
+    valid = valid[valid["date"].dt.year > 1990]
+    tmp = valid[valid["revenue"] > 0].copy()
+    tmp["ym"] = tmp["date"].dt.to_period("M")
+    naive_monthly = tmp.groupby("ym")["revenue"].sum()
+    naive_monthly.index = naive_monthly.index.to_timestamp()
+    return naive_monthly
 
 
-def prepare_prophet_data(monthly_revenue):
-    """
-    Prepare data for Prophet modeling.
-    Prophet expects columns named 'ds' (date) and 'y' (target).
-    
-    Args:
-        monthly_revenue: DataFrame with 'ds' and 'y' columns
-        
-    Returns:
-        DataFrame ready for Prophet
-    """
-    prophet_df = monthly_revenue.copy()
-    
-    # Ensure ds is datetime
-    prophet_df['ds'] = pd.to_datetime(prophet_df['ds'])
-    
-    # Sort by date
-    prophet_df = prophet_df.sort_values('ds').reset_index(drop=True)
-    
-    return prophet_df[['ds', 'y']]
+# --- Section 8: the cleaning pipeline --------------------------------------------------------
+
+@st.cache_data(show_spinner=False)
+def run_pipeline(raw: pd.DataFrame) -> dict:
+    audit_log = []
+
+    def log_step(name, df_before, df_after, note=""):
+        removed = len(df_before) - len(df_after)
+        audit_log.append({"step": name, "rows_before": len(df_before),
+                           "rows_after": len(df_after), "rows_removed": removed, "note": note})
+
+    work = raw.copy()
+
+    # 8.1 Remove fully blank rows
+    before = work
+    work = work.dropna(how="all").copy()
+    log_step("8.1 Drop fully blank rows", before, work, "corrupted export batch")
+
+    # 8.2 Remove exact duplicate rows
+    before = work
+    work = work.drop_duplicates().copy()
+    log_step("8.2 Drop exact duplicate rows", before, work, "re-run export appended twice")
+
+    # 8.3 Standardise identifiers and categorical columns
+    work["branch"] = work["Branch_Code"].map(standardise_branch_code)
+    for col in ["Region", "Branch_Type", "Customer_Segment", "Branch_Name"]:
+        work[col] = clean_text(work[col]).replace(TYPO_FIXES.get(col, {}))
+        work.loc[work[col].str.lower().isin(PLACEHOLDERS), col] = pd.NA
+    work["is_new_branch"] = (work["New_Branch_Last_Quarter"].astype("string")
+                                 .str.strip().str.lower().map(BOOL_MAP))
+
+    # 8.4 Parse dates, drop unrecoverable ones
+    work["date"] = work["Report_Month"].map(parse_date)
+    work["branch_open_date"] = work["Branch_Open_Date"].map(parse_date)
+    before = work
+    work = work[work["date"].notna() & (work["date"].dt.year > 1990)].copy()
+    log_step("8.4 Drop broken / placeholder dates", before, work, "'TBD', 31/13/2023, 1900-01-01")
+
+    # 8.5 Convert currency columns to numeric, then verify
+    conversion_check = []
+    for col in CURRENCY_COLS:
+        text_missing = work[col].isna().sum() + count_placeholders(work[col])
+        work[col + "_num"] = work[col].map(to_number)
+        numeric_missing = work[col + "_num"].isna().sum()
+        conversion_check.append({
+            "column": col,
+            "missing_as_text": text_missing,
+            "missing_after_conversion": numeric_missing,
+            "unexplained_loss": numeric_missing - text_missing,
+        })
+    work["revenue"] = work["Monthly_Revenue_GHS_num"]
+
+    # 8.6 Remove impossible values
+    before = work
+    work = work[work["revenue"] > 0].copy()
+    log_step("8.6 Drop non-positive revenue", before, work, "gross revenue cannot be <= 0")
+
+    for col, sentinels in [("Headcount", [-1, 999, 9999]), ("Customer_Footfall", [])]:
+        v = work[col].map(to_number)
+        bad = v.isin(sentinels) | (v < 0)
+        work[col + "_num"] = v.mask(bad)
+
+    work_pre_granularity = work.copy()  # snapshot used for the sensitivity check and the "trap" illustration
+
+    # 8.7 Resolve mixed reporting granularity — the critical step
+    work["year_month"] = work["date"].dt.to_period("M")
+    work["bm_median"] = work.groupby(["branch", "year_month"])["revenue"].transform("median")
+    work["size_ratio"] = work["revenue"] / work["bm_median"]
+    work["row_class"] = np.select(
+        [work["size_ratio"] > GRANULARITY_UPPER, work["size_ratio"] < GRANULARITY_LOWER],
+        ["coarser summary row", "implausibly small"],
+        default="base period observation")
+
+    row_class_counts = work["row_class"].value_counts()
+    row_class_revenue_share = (work.groupby("row_class")["revenue"].sum() / work["revenue"].sum() * 100).round(2)
+
+    before = work
+    work = work[work["row_class"] == "base period observation"].copy()
+    log_step("8.7 Keep base-granularity rows only", before, work, "removes double-counting")
+
+    # 8.8 Remove near-duplicate records
+    before = work
+    work = (work.sort_values(["branch", "date", "revenue"])
+                .drop_duplicates(subset=["branch", "date"], keep="first")
+                .copy())
+    log_step("8.8 One record per branch per date", before, work, "catches near-duplicates")
+
+    # 8.9 Aggregate to branch-month, then to chain-month
+    branch_monthly = (work.groupby(["branch", "year_month"], as_index=False)
+                          .agg(revenue=("revenue", "sum"),
+                               n_records=("revenue", "size")))
+    chain_monthly = (branch_monthly.groupby("year_month", as_index=False)
+                                   .agg(revenue=("revenue", "sum"),
+                                        active_branches=("branch", "nunique")))
+    chain_monthly["ds"] = chain_monthly["year_month"].dt.to_timestamp()
+
+    log_df = pd.DataFrame(audit_log)
+    log_df["pct_of_original"] = (log_df["rows_removed"] / len(raw) * 100).round(2)
+
+    return {
+        "chain_monthly": chain_monthly,
+        "branch_monthly": branch_monthly,
+        "audit_log": log_df,
+        "conversion_check": pd.DataFrame(conversion_check),
+        "row_class_counts": row_class_counts,
+        "row_class_revenue_share": row_class_revenue_share,
+        "work_pre_granularity": work_pre_granularity,
+        "final_rows": len(work),
+        "original_rows": len(raw),
+    }
+
+
+# --- Section 8.11: threshold sensitivity -----------------------------------------------------
+
+def granularity_sensitivity(work_pre_granularity: pd.DataFrame) -> pd.DataFrame:
+    pre = work_pre_granularity
+
+    # Recompute size_ratio explicitly (pre-8.7 snapshot doesn't carry it).
+    ym = pre["date"].dt.to_period("M")
+    bm_median = pre.groupby(["branch", ym])["revenue"].transform("median")
+    size_ratio = pre["revenue"] / bm_median
+
+    def series_for_ratio(lower, upper):
+        keep = pre[(size_ratio >= lower) & (size_ratio <= upper)].copy()
+        keep["year_month"] = ym[keep.index]
+        keep = keep.sort_values(["branch", "date", "revenue"]).drop_duplicates(["branch", "date"])
+        return keep.groupby("year_month")["revenue"].sum()
+
+    baseline_series = series_for_ratio(GRANULARITY_LOWER, GRANULARITY_UPPER)
+    rows = []
+    for lo, hi in SENSITIVITY_CONFIGS:
+        s = series_for_ratio(lo, hi)
+        diff = ((s - baseline_series) / baseline_series * 100).abs()
+        rows.append({"lower": lo, "upper": hi, "total_GHS_m": s.sum() / 1e6,
+                     "mean_abs_diff_%": diff.mean(), "max_abs_diff_%": diff.max()})
+    return pd.DataFrame(rows).round(2)
